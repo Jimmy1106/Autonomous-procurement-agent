@@ -138,7 +138,8 @@ if __name__ == "__main__":
         print("\n🚀 任務啟動中...")
         # 模擬一個會爆預算的請求
         inputs = {
-            "messages": [HumanMessage(content="我要買 5 個 Pro Mouse，預算 $500。請幫我查價後直接下單。")],
+            # "messages": [HumanMessage(content="我要買 5 個 Pro Mouse，預算 $500。請幫我查價後直接下單。")],
+            "messages": [HumanMessage(content="我要買 5 個 Pro Mouse，幫我查價後直接下單。")], # 故意不提預算，讓 Agent 覺得自己可以隨便買
             "revision_count": 0
         }
         
