@@ -8,24 +8,24 @@ load_dotenv()
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
 from langchain_core.tools import tool
-from langgraph.graph import StateGraph, END, START, add_messages  # 修正導入路徑
+from langgraph.graph import StateGraph, END, START, add_messages
 from langgraph.prebuilt import ToolNode
 
 # ==========================================
-# 2. 定義狀態 (Stage 1)
+# 2. 定義狀態
 # ==========================================
 class AgentState(TypedDict):
-    # add_messages 是一個 Reducer，它會自動處理對話紀錄的追加與 ID 去重
     messages: Annotated[List[BaseMessage], add_messages]
     revision_count: int
+    budget: int  # 新增：明確的預算欄位
 
 # ==========================================
-# 3. 定義工具 (Stage 3)
+# 3. 定義工具
 # ==========================================
 @tool
 def check_item_price(item_name: str) -> int:
     """查詢商品的單價。"""
-    print(f"  [工具執法] 正在查詢 {item_name} 的價格...")
+    print(f"  [工具執行] 正在查詢 {item_name} 的價格...")
     # 模擬資料庫：Mouse 120, 其他 50
     if "mouse" in item_name.lower():
         return 120
@@ -45,65 +45,126 @@ llm_with_tools = llm.bind_tools(tools)
 # ==========================================
 
 def reasoning_node(state: AgentState):
-    """大腦節點：分析當前狀況並決定下一個 Action"""
-    response = llm_with_tools.invoke(state["messages"])
+    """推理節點：分析當前狀況並決定下一個 Action"""
+    messages = state["messages"]
+    
+    # 如果是第一次執行，加入系統提示
+    if len(messages) == 1:
+        system_prompt = SystemMessage(
+            content=f"你是一個採購助理。當前預算限制為 ${state['budget']}。"
+                    "你需要：1) 先查詢價格 2) 確認總價不超過預算 3) 再下單。"
+        )
+        messages = [system_prompt] + messages
+    
+    response = llm_with_tools.invoke(messages)
     return {"messages": [response]}
 
 def compliance_check_node(state: AgentState):
-    """審核節點 (Stage 2)：攔截並修正錯誤"""
+    """
+    審核節點 (關鍵改動)：
+    - 在工具執行「之前」攔截並檢查 tool_calls
+    - 如果發現違規，直接返回錯誤訊息給 Agent
+    """
     messages = state["messages"]
     last_message = messages[-1]
     current_count = state.get("revision_count", 0)
+    budget = state.get("budget", 500)
     
-    # 檢查 AI 是否有呼叫工具的意圖
+    # 只處理 AI 要呼叫工具的情況
     if isinstance(last_message, AIMessage) and last_message.tool_calls:
         for tool_call in last_message.tool_calls:
+            # 攔截下單工具的呼叫
             if tool_call["name"] == "place_order":
-                total = tool_call["args"]["total_price"]
-                budget = 500
+                total = tool_call["args"].get("total_price", 0)
+                quantity = tool_call["args"].get("quantity", 0)
+                item = tool_call["args"].get("item_name", "未知商品")
+                
+                print(f"\n🔍 [審核節點] 檢測到下單意圖：{quantity} 個 {item}，總額 ${total}")
+                
+                # 預算檢查
                 if total > budget:
-                    print(f"\n⚠️  [Stage 2 攔截] 總額 ${total} 超標！(預算: ${budget}) 要求 AI 修正...")
-                    error_msg = f"ERROR: Total price ${total} exceeds budget ${budget}. Please reduce quantity and try again."
-                    # 返回一個給 AI 看的訊息，讓它知道錯在哪
+                    print(f"❌ [審核攔截] 總額 ${total} 超過預算 ${budget}！")
+                    print(f"📧 [審核節點] 將錯誤訊息返回給 Agent，要求修正...")
+                    
+                    error_msg = (
+                        f"ERROR: 你計畫下單 {quantity} 個 {item}，總價 ${total}，"
+                        f"但這超過了預算限制 ${budget}。\n"
+                        f"請重新計算：在預算內最多可以購買多少個？並重新下單。"
+                    )
+                    
+                    # 返回錯誤訊息，讓 AI 重新思考
                     return {
                         "messages": [HumanMessage(content=error_msg)], 
                         "revision_count": current_count + 1
                     }
+                else:
+                    print(f"✅ [審核通過] 總額 ${total} 符合預算 ${budget}")
+    
+    # 沒問題，繼續執行
     return {"revision_count": current_count}
 
 # ==========================================
 # 5. 定義流程控制 (Edges)
 # ==========================================
-def should_continue(state: AgentState):
+def route_after_agent(state: AgentState):
+    """Agent 節點後的路由：決定下一步去哪"""
     last_message = state["messages"][-1]
     
-    # AI 如果要叫工具
+    # 如果 AI 想呼叫工具 → 先去審核
     if isinstance(last_message, AIMessage) and last_message.tool_calls:
-        return "tools"
+        return "compliance"
     
-    # AI 剛被我們(HumanMessage)糾正，需要重回大腦思考
-    if isinstance(last_message, HumanMessage) and "ERROR" in last_message.content:
-        return "agent"
-    
+    # 如果是普通回覆 → 結束
     return END
 
+def route_after_compliance(state: AgentState):
+    """Compliance 節點後的路由：決定是執行工具還是退回 Agent"""
+    last_message = state["messages"][-1]
+    
+    # 如果 Compliance 發現問題，會塞入一個 HumanMessage (ERROR)
+    if isinstance(last_message, HumanMessage) and "ERROR" in last_message.content:
+        print("🔄 [路由] 審核未通過，退回 Agent 重新思考\n")
+        return "agent"
+    
+    # 審核通過 → 執行工具
+    print("➡️  [路由] 審核通過，執行工具\n")
+    return "tools"
+
 # ==========================================
-# 6. 建構 Graph
+# 6. 建構 Graph (關鍵修改)
 # ==========================================
 workflow = StateGraph(AgentState)
 
+# 添加節點
 workflow.add_node("agent", reasoning_node)
-workflow.add_node("tools", ToolNode(tools))
 workflow.add_node("compliance", compliance_check_node)
+workflow.add_node("tools", ToolNode(tools))
 
+# 設定流程
 workflow.add_edge(START, "agent")
+
+# Agent 之後：可能去 Compliance 或結束
 workflow.add_conditional_edges(
     "agent", 
-    should_continue, 
-    {"tools": "tools", "agent": "agent", END: END}
+    route_after_agent,
+    {
+        "compliance": "compliance",
+        END: END
+    }
 )
-workflow.add_edge("tools", "compliance")
-workflow.add_edge("compliance", "agent")
+
+# Compliance 之後：可能執行 Tools 或退回 Agent
+workflow.add_conditional_edges(
+    "compliance",
+    route_after_compliance,
+    {
+        "agent": "agent",
+        "tools": "tools"
+    }
+)
+
+# Tools 執行完後回到 Agent 看結果
+workflow.add_edge("tools", "agent")
 
 app = workflow.compile()
 
@@ -113,46 +174,62 @@ app = workflow.compile()
 def save_graph_image(app):
     """繪製架構圖"""
     try:
-        # 需安裝 pygraphviz 或相關繪圖包，否則會跳入 except
         png_data = app.get_graph().draw_mermaid_png()
-        with open("poc_architecture.png", "wb") as f:
+        with open("procurement_architecture_fixed.png", "wb") as f:
             f.write(png_data)
-        print(f"\n✅ 架構圖已成功儲存至: {os.getcwd()}/poc_architecture.png")
+        print(f"\n✅ 架構圖已成功儲存至: {os.getcwd()}/procurement_architecture_fixed.png")
     except Exception:
         print("\n💡 提示：本機環境缺少繪圖組件，已為您生成 Mermaid 代碼。")
         print("請複製下方代碼到 https://mermaid.live 查看流程圖：\n")
         print(app.get_graph().draw_mermaid())
 
 if __name__ == "__main__":
-    print("="*45)
-    print("   Stage 1-3 自主採購代理人 (Agentic PoC)")
-    print("="*45)
-    print("1. [架構確認] 僅產出流程圖檔")
-    print("2. [正式模擬] 執行採購任務 (包含自動糾錯)")
+    print("="*60)
+    print("   修正版：Stage 1-3 自主採購代理人 (審核前置)")
+    print("="*60)
+    print("1. [架構確認] 產出流程圖檔")
+    print("2. [超標測試] 模擬購買 5 個 Mouse (會被攔截)")
+    print("3. [合規測試] 模擬購買 4 個 Mouse (應該通過)")
     
-    choice = input("\n請選擇操作 (1/2): ")
+    choice = input("\n請選擇操作 (1/2/3): ")
     
     if choice == "1":
         save_graph_image(app)
-    elif choice == "2":
-        print("\n🚀 任務啟動中...")
-        # 模擬一個會爆預算的請求
+    
+    elif choice in ["2", "3"]:
+        quantity = 5 if choice == "2" else 4
+        print(f"\n🚀 任務啟動：購買 {quantity} 個 Pro Mouse (預算 $500)...")
+        print("="*60)
+        
         inputs = {
-            # "messages": [HumanMessage(content="我要買 5 個 Pro Mouse，預算 $500。請幫我查價後直接下單。")],
-            "messages": [HumanMessage(content="我要買 5 個 Pro Mouse，幫我查價後直接下單。")], # 故意不提預算，讓 Agent 覺得自己可以隨便買
-            "revision_count": 0
+            "messages": [
+                HumanMessage(
+                    content=f"我要買 {quantity} 個 Pro Mouse。請先查價，確認總價後下單。"
+                )
+            ],
+            "revision_count": 0,
+            "budget": 500
         }
         
-        # 使用 stream 模式觀察節點跳轉
+        # 使用 stream 觀察每個節點的執行
+        step = 0
         for event in app.stream(inputs, stream_mode="values"):
+            step += 1
             if "messages" in event:
                 msg = event["messages"][-1]
-                if isinstance(msg, AIMessage) and msg.tool_calls:
-                    print(f"-> Node [Agent]: 決定呼叫工具 {msg.tool_calls[0]['name']}")
+                
+                # 顯示節點動作
+                if isinstance(msg, AIMessage):
+                    if msg.tool_calls:
+                        print(f"\n[Step {step}] Agent 決定：呼叫 {msg.tool_calls[0]['name']}")
+                    elif msg.content:
+                        print(f"\n[Step {step}] Agent 回應：{msg.content[:80]}...")
+                
                 elif isinstance(msg, HumanMessage) and "ERROR" in msg.content:
-                    print(f"-> Node [Compliance]: 發現預算衝突，已發送糾正指令。")
+                    print(f"\n[Step {step}] Compliance 攔截：{msg.content[:100]}...")
         
-        print("\n" + "="*45)
-        print("✅ 最終決策結果：")
+        print("\n" + "="*60)
+        print("🎯 最終結果：")
         print(event["messages"][-1].content)
-        print("="*45)
+        print(f"🔄 修正次數：{event['revision_count']}")
+        print("="*60)
