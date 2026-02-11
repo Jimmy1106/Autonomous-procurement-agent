@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.graph import StateGraph, END, START, add_messages
 from langgraph.prebuilt import ToolNode
@@ -63,7 +63,7 @@ def compliance_check_node(state: AgentState):
     """
     審核節點 (關鍵改動)：
     - 在工具執行「之前」攔截並檢查 tool_calls
-    - 如果發現違規，直接返回錯誤訊息給 Agent
+    - 如果發現違規，返回 ToolMessage 表示執行失敗
     """
     messages = state["messages"]
     last_message = messages[-1]
@@ -87,14 +87,21 @@ def compliance_check_node(state: AgentState):
                     print(f"📧 [審核節點] 將錯誤訊息返回給 Agent，要求修正...")
                     
                     error_msg = (
-                        f"ERROR: 你計畫下單 {quantity} 個 {item}，總價 ${total}，"
-                        f"但這超過了預算限制 ${budget}。\n"
-                        f"請重新計算：在預算內最多可以購買多少個？並重新下單。"
+                        f"COMPLIANCE_ERROR: 下單請求被拒絕。\n"
+                        f"原因：總價 ${total} 超過預算限制 ${budget}。\n"
+                        f"詳情：你計畫購買 {quantity} 個 {item}，總價 ${total}。\n"
+                        f"要求：請重新計算在預算 ${budget} 內最多可以購買多少個，並重新下單。"
                     )
                     
-                    # 返回錯誤訊息，讓 AI 重新思考
+                    # 關鍵修正：使用 ToolMessage 回應被攔截的 tool_call
+                    # 這樣才符合 OpenAI API 的要求
+                    tool_message = ToolMessage(
+                        content=error_msg,
+                        tool_call_id=tool_call["id"]  # 必須對應原本的 tool_call_id
+                    )
+                    
                     return {
-                        "messages": [HumanMessage(content=error_msg)], 
+                        "messages": [tool_message], 
                         "revision_count": current_count + 1
                     }
                 else:
@@ -121,8 +128,8 @@ def route_after_compliance(state: AgentState):
     """Compliance 節點後的路由：決定是執行工具還是退回 Agent"""
     last_message = state["messages"][-1]
     
-    # 如果 Compliance 發現問題，會塞入一個 HumanMessage (ERROR)
-    if isinstance(last_message, HumanMessage) and "ERROR" in last_message.content:
+    # 如果 Compliance 發現問題，會塞入一個 ToolMessage (COMPLIANCE_ERROR)
+    if isinstance(last_message, ToolMessage) and "COMPLIANCE_ERROR" in last_message.content:
         print("🔄 [路由] 審核未通過，退回 Agent 重新思考\n")
         return "agent"
     
@@ -225,8 +232,11 @@ if __name__ == "__main__":
                     elif msg.content:
                         print(f"\n[Step {step}] Agent 回應：{msg.content[:80]}...")
                 
-                elif isinstance(msg, HumanMessage) and "ERROR" in msg.content:
-                    print(f"\n[Step {step}] Compliance 攔截：{msg.content[:100]}...")
+                elif isinstance(msg, ToolMessage) and "COMPLIANCE_ERROR" in msg.content:
+                    print(f"\n[Step {step}] Compliance 攔截：{msg.content.split('詳情：')[0]}...")
+                
+                elif isinstance(msg, ToolMessage):
+                    print(f"\n[Step {step}] Tool 執行結果：{msg.content[:80]}...")
         
         print("\n" + "="*60)
         print("🎯 最終結果：")
