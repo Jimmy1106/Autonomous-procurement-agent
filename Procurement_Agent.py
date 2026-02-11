@@ -51,8 +51,23 @@ def reasoning_node(state: AgentState):
     # 如果是第一次執行，加入系統提示
     if len(messages) == 1:
         system_prompt = SystemMessage(
-            content=f"你是一個採購助理。當前預算限制為 ${state['budget']}。"
-                    "你需要：1) 先查詢價格 2) 確認總價不超過預算 3) 再下單。"
+            content=f"""你是一個自主採購代理人。當前預算限制為 ${state['budget']}。
+
+核心規則：
+1. 先使用 check_item_price 查詢價格
+2. 計算總價，確保不超過預算
+3. 直接使用 place_order 下單（不需要詢問用戶確認）
+
+重要：如果你的下單請求因為超過預算而被拒絕，你必須：
+- 立即重新計算：預算內最多可購買數量 = floor(預算 / 單價)
+- 直接呼叫 place_order 下單新的數量
+- 不要詢問用戶，直接執行修正後的下單
+
+範例：
+- 用戶要 5 個，單價 $120，預算 $500
+- 第一次嘗試：place_order(5, $600) → 被拒絕
+- 自動修正：$500 ÷ $120 = 4.16，取整數 = 4
+- 立即執行：place_order(4, $480) → 成功"""
         )
         messages = [system_prompt] + messages
     
@@ -86,11 +101,17 @@ def compliance_check_node(state: AgentState):
                     print(f"❌ [審核攔截] 總額 ${total} 超過預算 ${budget}！")
                     print(f"📧 [審核節點] 將錯誤訊息返回給 Agent，要求修正...")
                     
+                    # 計算最大可購買數量
+                    max_quantity = budget // (total // quantity)  # floor division
+                    
                     error_msg = (
                         f"COMPLIANCE_ERROR: 下單請求被拒絕。\n"
-                        f"原因：總價 ${total} 超過預算限制 ${budget}。\n"
-                        f"詳情：你計畫購買 {quantity} 個 {item}，總價 ${total}。\n"
-                        f"要求：請重新計算在預算 ${budget} 內最多可以購買多少個，並重新下單。"
+                        f"原因：總價 ${total} 超過預算 ${budget}。\n"
+                        f"你嘗試購買 {quantity} 個 {item}。\n\n"
+                        f"⚠️ 強制要求：立即重新計算並下單。\n"
+                        f"- 在預算 ${budget} 內，最多可購買 {max_quantity} 個\n"
+                        f"- 你必須立即呼叫 place_order 下單 {max_quantity} 個\n"
+                        f"- 不要詢問用戶，直接執行下單操作"
                     )
                     
                     # 關鍵修正：使用 ToolMessage 回應被攔截的 tool_call
