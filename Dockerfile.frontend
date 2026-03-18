@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY frontend/ ./frontend/
+
+EXPOSE 8501
+
+# server.address=0.0.0.0：讓 container 外部可以連進來
+# server.fileWatcherType=none：container 內不需要 hot-reload
+CMD ["python", "-m", "streamlit", "run", "frontend/streamlit_app.py", \
+     "--server.address=0.0.0.0", \
+     "--server.port=8501", \
+     "--server.fileWatcherType=none"]

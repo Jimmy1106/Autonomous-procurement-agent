@@ -1,0 +1,28 @@
+services:
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env                  # OPENAI_API_KEY 從這裡注入，不寫死在 image 裡
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s       # 給 graph compile 一點冷啟動時間
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "8501:8501"
+    environment:
+      API_URL: http://api:8000  # container 內部用 service name 互連，不走 localhost
+    depends_on:
+      api:
+        condition: service_healthy  # 等 api 健康檢查通過才啟動，避免前端起來但 API 還沒好

@@ -1,0 +1,15 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# 先複製 requirements 單獨安裝，利用 Docker layer cache
+# 只要 requirements.txt 沒變，這層就不會重新執行
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 再複製應用程式碼
+COPY app/ ./app/
+
+EXPOSE 8000
+
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
