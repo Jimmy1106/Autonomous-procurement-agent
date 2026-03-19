@@ -5,7 +5,7 @@ from langchain_core.tools import tool
 def check_item_price(item_name: str) -> int:
     """查詢商品的單價。"""
     print(f"  [工具執行] 正在查詢 {item_name} 的價格...")
-    if "mouse" in item_name.lower():
+    if ("mouse" in item_name.lower()) or ("滑鼠" in item_name):
         return 120
     return 50
 
