@@ -1,8 +1,8 @@
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage
 
-from app.agent.state import AgentState
-from app.tools.procurement_tools import tools
+from core.state import AgentState
+from core.tools.procurement_tools import tools
 
 # Lazy initialization：避免 import 時就需要 OPENAI_API_KEY
 _llm_with_tools = None

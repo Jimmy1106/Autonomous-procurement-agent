@@ -12,13 +12,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
-from app.routes.procure import router as procure_router
+from api.routes.procure import router as procure_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """服務啟動時預先 build graph，避免第一個 request 有冷啟動延遲。"""
-    from app.services.agent_runner import _get_graph
+    from api.services.agent_runner import _get_graph
     _get_graph()
     print("✅ LangGraph compiled and ready.")
     yield

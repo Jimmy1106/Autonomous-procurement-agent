@@ -2,10 +2,10 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
-from app.agent.state import AgentState
-from app.nodes.compliance import compliance_check_node
-from app.nodes.reasoning import reasoning_node
-from app.tools.procurement_tools import tools
+from core.state import AgentState
+from core.nodes.compliance import compliance_check_node
+from core.nodes.reasoning import reasoning_node
+from core.tools.procurement_tools import tools
 
 
 # ==========================================

@@ -8,7 +8,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.services.agent_runner import run_agent_stream
+from api.services.agent_runner import run_agent_stream
 
 router = APIRouter(prefix="/api", tags=["procurement"])
 

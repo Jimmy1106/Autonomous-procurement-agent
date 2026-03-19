@@ -11,7 +11,7 @@ from typing import AsyncGenerator
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from app.agent.graph import build_graph
+from core.graph import build_graph
 
 # 每次呼叫都 build 一個新的 graph instance
 # 未來若改為有 memory 的版本，可在此注入 checkpointer

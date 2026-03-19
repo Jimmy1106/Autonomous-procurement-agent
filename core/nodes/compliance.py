@@ -1,6 +1,6 @@
 from langchain_core.messages import AIMessage, ToolMessage
 
-from app.agent.state import AgentState
+from core.state import AgentState
 
 
 def compliance_check_node(state: AgentState) -> dict:
