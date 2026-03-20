@@ -2,9 +2,10 @@
 frontend/pages/monitor.py
 
 LLM 監控儀表板：
+- 子分頁：總覽 / 任務紀錄與明細
 - 台灣時間顯示
 - 時間篩選器（今日 / 近 7 天 / 近 30 天 / 自訂）
-- 與上週同期比較
+- 與上週同期比較分析
 - LLM 呼叫次數統計
 - 呼叫原因明細
 """
@@ -20,7 +21,6 @@ import streamlit as st
 
 from monitoring.storage import (
     get_llm_calls_by_run,
-    get_recent_runs,
     get_revision_distribution,
     get_runs_by_date_range,
     get_status_distribution,
@@ -29,13 +29,12 @@ from monitoring.storage import (
 )
 
 # ──────────────────────────────────────────────
-# 常數與工具函式
+# 工具函式
 # ──────────────────────────────────────────────
 TZ_TAIPEI = timezone(timedelta(hours=8))
 
 
 def to_taipei(utc_str: str) -> datetime:
-    """UTC ISO 字串 → 台灣時間 datetime。"""
     dt = datetime.fromisoformat(utc_str)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
@@ -47,14 +46,13 @@ def now_taipei() -> datetime:
 
 
 def taipei_to_utc_range(start: datetime, end: datetime) -> tuple[str, str]:
-    """台灣時間的起訖 → UTC ISO 字串，供 SQLite 查詢用。"""
-    start_utc = start.astimezone(timezone.utc).isoformat()
-    end_utc   = end.astimezone(timezone.utc).isoformat()
-    return start_utc, end_utc
+    return (
+        start.astimezone(timezone.utc).isoformat(),
+        end.astimezone(timezone.utc).isoformat(),
+    )
 
 
 def delta_arrow(current, previous) -> str:
-    """計算漲跌幅，回傳帶箭頭的字串。"""
     if not previous or previous == 0:
         return ""
     pct = (current - previous) / previous * 100
@@ -101,14 +99,14 @@ with st.sidebar:
         with col2:
             end_date = st.date_input("結束日期", value=now.date())
         start_dt = datetime(start_date.year, start_date.month, start_date.day, tzinfo=TZ_TAIPEI)
-        end_dt   = datetime(end_date.year,   end_date.month,   end_date.day,
+        end_dt   = datetime(end_date.year, end_date.month, end_date.day,
                             hour=23, minute=59, second=59, tzinfo=TZ_TAIPEI)
 
-    # 上週同期（用來做比較分析）
-    days_in_range = (end_dt - start_dt).days + 1
+    days_in_range = max((end_dt - start_dt).days + 1, 1)
     prev_end_dt   = start_dt - timedelta(seconds=1)
-    prev_start_dt = prev_end_dt - timedelta(days=days_in_range - 1)
-    prev_start_dt = prev_start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    prev_start_dt = (prev_end_dt - timedelta(days=days_in_range - 1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
 
     st.divider()
     st.caption(f"📅 {start_dt.strftime('%Y/%m/%d')} ～ {end_dt.strftime('%Y/%m/%d')}")
@@ -125,7 +123,7 @@ with st.sidebar:
 # ──────────────────────────────────────────────
 # 取得資料
 # ──────────────────────────────────────────────
-start_utc, end_utc         = taipei_to_utc_range(start_dt, end_dt)
+start_utc, end_utc           = taipei_to_utc_range(start_dt, end_dt)
 prev_start_utc, prev_end_utc = taipei_to_utc_range(prev_start_dt, prev_end_dt)
 
 stats      = get_summary_stats(start_utc, end_utc)
@@ -136,211 +134,183 @@ if not stats or stats.get("total_runs") == 0:
     st.stop()
 
 # ──────────────────────────────────────────────
-# 頂部：Metrics（含與上週比較）
+# 子分頁
 # ──────────────────────────────────────────────
-st.subheader("📈 區間總覽")
+tab1, tab2 = st.tabs(["📈 總覽", "🕐 任務紀錄與明細"])
 
-c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+# ══════════════════════════════════════════════
+# TAB 1：總覽
+# ══════════════════════════════════════════════
+with tab1:
 
-c1.metric(
-    "總任務數",
-    stats.get("total_runs", 0),
-    delta_arrow(stats.get("total_runs", 0), prev_stats.get("total_runs", 0)),
-)
-c2.metric(
-    "Input Tokens",
-    f"{stats.get('total_input_tokens', 0):,}",
-)
-c3.metric(
-    "Output Tokens",
-    f"{stats.get('total_output_tokens', 0):,}",
-)
-c4.metric(
-    "累計費用 (USD)",
-    f"${stats.get('total_cost_usd', 0):.6f}",
-    delta_arrow(stats.get("total_cost_usd", 0), prev_stats.get("total_cost_usd", 0)),
-)
-c5.metric(
-    "平均 Latency",
-    f"{int(stats.get('avg_latency_ms', 0))} ms",
-    delta_arrow(stats.get("avg_latency_ms", 0), prev_stats.get("avg_latency_ms", 0)),
-)
-c6.metric(
-    "平均修正次數",
-    f"{stats.get('avg_revision_count', 0):.2f}",
-    delta_arrow(stats.get("avg_revision_count", 0), prev_stats.get("avg_revision_count", 0)),
-)
-c7.metric(
-    "平均 LLM 呼叫次數/任務",
-    f"{stats.get('avg_llm_calls_per_run', 0):.1f}",
-    delta_arrow(stats.get("avg_llm_calls_per_run", 0), prev_stats.get("avg_llm_calls_per_run", 0)),
-)
+    st.subheader("區間總覽")
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+    c1.metric("總任務數",       stats.get("total_runs", 0),
+              delta_arrow(stats.get("total_runs", 0), prev_stats.get("total_runs", 0)))
+    c2.metric("Input Tokens",  f"{stats.get('total_input_tokens', 0):,}")
+    c3.metric("Output Tokens", f"{stats.get('total_output_tokens', 0):,}")
+    c4.metric("累計費用 (USD)", f"${stats.get('total_cost_usd', 0):.6f}",
+              delta_arrow(stats.get("total_cost_usd", 0), prev_stats.get("total_cost_usd", 0)))
+    c5.metric("平均 Latency",  f"{int(stats.get('avg_latency_ms', 0))} ms",
+              delta_arrow(stats.get("avg_latency_ms", 0), prev_stats.get("avg_latency_ms", 0)))
+    c6.metric("平均修正次數",   f"{stats.get('avg_revision_count', 0):.2f}",
+              delta_arrow(stats.get("avg_revision_count", 0), prev_stats.get("avg_revision_count", 0)))
+    c7.metric("平均 LLM 呼叫/任務", f"{stats.get('avg_llm_calls_per_run', 0):.1f}",
+              delta_arrow(stats.get("avg_llm_calls_per_run", 0), prev_stats.get("avg_llm_calls_per_run", 0)))
 
-st.divider()
+    st.divider()
 
-# ──────────────────────────────────────────────
-# 與上週同期比較（文字摘要）
-# ──────────────────────────────────────────────
-with st.expander("📊 與上週同期比較分析", expanded=False):
-    if not prev_stats or prev_stats.get("total_runs", 0) == 0:
-        st.info("上週同期尚無資料，無法比較。")
-    else:
-        metrics_to_compare = [
-            ("總任務數",          "total_runs",             "",      False),
-            ("累計費用 (USD)",     "total_cost_usd",         "$",     True),
-            ("平均 Latency (ms)", "avg_latency_ms",          "ms",    True),
-            ("平均修正次數",       "avg_revision_count",     "",      True),
-            ("平均 LLM 呼叫次數", "avg_llm_calls_per_run",  "",      True),
-        ]
-        rows = []
-        for label, key, unit, lower_is_better in metrics_to_compare:
-            curr = stats.get(key, 0) or 0
-            prev = prev_stats.get(key, 0) or 0
-            if prev == 0:
-                change_str = "—"
-            else:
-                pct = (curr - prev) / prev * 100
-                direction = "▲" if pct > 0 else "▼"
-                # 費用/延遲/修正次數：上升是壞事；任務數：上升是好事
-                is_bad = (pct > 0 and lower_is_better) or (pct < 0 and not lower_is_better)
-                sign = "🔴" if is_bad else "🟢"
-                change_str = f"{sign} {direction} {abs(pct):.1f}%"
-            rows.append({
-                "指標":     label,
-                "本期":     f"{unit}{curr:.4g}" if unit == "$" else f"{curr:.4g}{unit}",
-                "上週同期": f"{unit}{prev:.4g}" if unit == "$" else f"{prev:.4g}{unit}",
-                "變化":     change_str,
-            })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    # 與上週同期比較
+    with st.expander("📊 與上週同期比較分析", expanded=True):
+        if not prev_stats or prev_stats.get("total_runs", 0) == 0:
+            st.info("上週同期尚無資料，無法比較。")
+        else:
+            metrics_to_compare = [
+                ("總任務數",           "total_runs",            "",   False),
+                ("累計費用 (USD)",      "total_cost_usd",        "$",  True),
+                ("平均 Latency (ms)",  "avg_latency_ms",         "ms", True),
+                ("平均修正次數",        "avg_revision_count",    "",   True),
+                ("平均 LLM 呼叫次數",  "avg_llm_calls_per_run", "",   True),
+            ]
+            rows = []
+            for label, key, unit, lower_is_better in metrics_to_compare:
+                curr = stats.get(key, 0) or 0
+                prev = prev_stats.get(key, 0) or 0
+                if prev == 0:
+                    change_str = "—"
+                else:
+                    pct = (curr - prev) / prev * 100
+                    direction = "▲" if pct > 0 else "▼"
+                    is_bad = (pct > 0 and lower_is_better) or (pct < 0 and not lower_is_better)
+                    sign = "🔴" if is_bad else "🟢"
+                    change_str = f"{sign} {direction} {abs(pct):.1f}%"
+                curr_str = f"${curr:.4g}" if unit == "$" else f"{curr:.4g}{unit}"
+                prev_str = f"${prev:.4g}" if unit == "$" else f"{prev:.4g}{unit}"
+                rows.append({"指標": label, "本期": curr_str, "上週同期": prev_str, "變化": change_str})
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-st.divider()
+    st.divider()
 
-# ──────────────────────────────────────────────
-# 中部：圖表
-# ──────────────────────────────────────────────
-left, right = st.columns(2)
+    # 圖表
+    left, right = st.columns(2)
 
-with left:
-    st.subheader("🔄 自動修正次數分布")
-    rev_data = get_revision_distribution(start_utc, end_utc)
-    if rev_data:
-        df_rev = pd.DataFrame(rev_data)
-        df_rev["revision_count"] = df_rev["revision_count"].astype(str) + " 次"
-        st.bar_chart(df_rev.set_index("revision_count")["count"])
-        st.caption("0 次 = 一次通過；≥1 次 = 被 Compliance 攔截並自動修正")
-    else:
-        st.info("尚無資料")
+    with left:
+        st.subheader("🔄 自動修正次數分布")
+        rev_data = get_revision_distribution(start_utc, end_utc)
+        if rev_data:
+            df_rev = pd.DataFrame(rev_data)
+            df_rev["revision_count"] = df_rev["revision_count"].astype(str) + " 次"
+            st.bar_chart(df_rev.set_index("revision_count")["count"])
+            st.caption("0 次 = 一次通過；≥1 次 = 被 Compliance 攔截並自動修正")
+        else:
+            st.info("尚無資料")
 
-with right:
-    st.subheader("✅ 任務結果分布")
-    status_data = get_status_distribution(start_utc, end_utc)
-    if status_data:
-        df_status = pd.DataFrame(status_data)
-        status_labels = {
-            "success":     "✅ 成功",
-            "intercepted": "⚠️ 攔截後修正",
-            "error":       "❌ 錯誤",
-        }
-        df_status["status"] = df_status["status"].map(lambda s: status_labels.get(s, s))
-        st.bar_chart(df_status.set_index("status")["count"])
-    else:
-        st.info("尚無資料")
+    with right:
+        st.subheader("✅ 任務結果分布")
+        status_data = get_status_distribution(start_utc, end_utc)
+        if status_data:
+            df_status = pd.DataFrame(status_data)
+            status_labels = {
+                "success":     "✅ 成功",
+                "intercepted": "⚠️ 攔截後修正",
+                "error":       "❌ 錯誤",
+            }
+            df_status["status"] = df_status["status"].map(lambda s: status_labels.get(s, s))
+            st.bar_chart(df_status.set_index("status")["count"])
+        else:
+            st.info("尚無資料")
 
-st.divider()
 
-# ──────────────────────────────────────────────
-# 最近任務列表
-# ──────────────────────────────────────────────
-st.subheader("🕐 任務紀錄")
+# ══════════════════════════════════════════════
+# TAB 2：任務紀錄與明細
+# ══════════════════════════════════════════════
+with tab2:
 
-runs = get_runs_by_date_range(start_utc, end_utc)
-if not runs:
-    st.info("此區間無任務紀錄")
-    st.stop()
+    runs = get_runs_by_date_range(start_utc, end_utc)
+    if not runs:
+        st.info("此區間無任務紀錄")
+        st.stop()
 
-df_runs = pd.DataFrame(runs)
+    # ── 任務列表 ──
+    st.subheader("任務紀錄")
 
-# 時間轉台灣時間
-df_runs["timestamp"] = df_runs["timestamp"].apply(
-    lambda s: to_taipei(s).strftime("%Y-%m-%d %H:%M:%S")
-)
-df_runs["total_cost_usd"]   = df_runs["total_cost_usd"].apply(lambda x: f"${x:.6f}")
-df_runs["total_latency_ms"] = df_runs["total_latency_ms"].apply(lambda x: f"{x} ms")
+    df_runs = pd.DataFrame(runs)
+    df_runs["timestamp"]        = df_runs["timestamp"].apply(
+        lambda s: to_taipei(s).strftime("%Y-%m-%d %H:%M:%S")
+    )
+    df_runs["total_cost_usd"]   = df_runs["total_cost_usd"].apply(lambda x: f"${x:.6f}")
+    df_runs["total_latency_ms"] = df_runs["total_latency_ms"].apply(lambda x: f"{x} ms")
 
-display_cols = {
-    "timestamp":            "時間（台灣）",
-    "input_message":        "輸入需求",
-    "budget":               "預算",
-    "status":               "結果",
-    "revision_count":       "修正次數",
-    "total_input_tokens":   "Input Tokens",
-    "total_output_tokens":  "Output Tokens",
-    "total_cost_usd":       "費用 (USD)",
-    "total_latency_ms":     "總延遲",
-}
-st.dataframe(
-    df_runs[list(display_cols.keys())].rename(columns=display_cols),
-    use_container_width=True,
-    hide_index=True,
-)
-
-st.divider()
-
-# ──────────────────────────────────────────────
-# 單次任務明細
-# ──────────────────────────────────────────────
-st.subheader("🔍 單次任務 LLM 呼叫明細")
-
-run_options = {
-    f"{to_taipei(r['timestamp']).strftime('%m/%d %H:%M')}  |  {r['input_message'][:25]}...": r["run_id"]
-    for r in runs
-}
-selected_label  = st.selectbox("選擇任務：", list(run_options.keys()))
-selected_run_id = run_options[selected_label]
-selected_run    = next(r for r in runs if r["run_id"] == selected_run_id)
-
-llm_calls = get_llm_calls_by_run(selected_run_id)
-
-if not llm_calls:
-    st.info("此任務無 LLM 呼叫明細")
-else:
-    # LLM 呼叫次數 summary
-    total_calls = len(llm_calls)
-    m1, m2, m3 = st.columns(3)
-    m1.metric("本次任務 LLM 呼叫次數", total_calls)
-    m2.metric("本次 Input Tokens",  sum(c["input_tokens"]  for c in llm_calls))
-    m3.metric("本次 Output Tokens", sum(c["output_tokens"] for c in llm_calls))
-
-    df_calls = pd.DataFrame(llm_calls)
-    df_calls["cost_usd"]    = df_calls["cost_usd"].apply(lambda x: f"${x:.8f}")
-    df_calls["latency_ms"]  = df_calls["latency_ms"].apply(lambda x: f"{x} ms")
-    df_calls["call_reason"] = df_calls["call_reason"].fillna("—")
-
-    display_call_cols = {
-        "sequence":      "第幾次",
-        "call_reason":   "呼叫原因",
-        "input_tokens":  "Input Tokens",
-        "output_tokens": "Output Tokens",
-        "cost_usd":      "費用 (USD)",
-        "latency_ms":    "延遲",
+    display_cols = {
+        "timestamp":            "時間（台灣）",
+        "input_message":        "輸入需求",
+        "budget":               "預算",
+        "status":               "結果",
+        "revision_count":       "修正次數",
+        "total_input_tokens":   "Input Tokens",
+        "total_output_tokens":  "Output Tokens",
+        "total_cost_usd":       "費用 (USD)",
+        "total_latency_ms":     "總延遲",
     }
     st.dataframe(
-        df_calls[list(display_call_cols.keys())].rename(columns=display_call_cols),
+        df_runs[list(display_cols.keys())].rename(columns=display_cols),
         use_container_width=True,
         hide_index=True,
     )
 
-    # 節點執行路徑視覺化
-    st.subheader("🗺️ 節點執行路徑")
-    revision_count = selected_run["revision_count"]
-    if revision_count > 0:
-        intercept_steps = []
-        for _ in range(revision_count):
-            intercept_steps += ["❌ compliance 攔截", "🤖 agent 重新推理"]
-        path = (["▶ START", "🤖 agent", "🔍 compliance"]
-                + intercept_steps
-                + ["🔍 compliance 通過", "🔧 tools", "🤖 agent", "⏹ END"])
-    else:
-        path = ["▶ START", "🤖 agent", "🔍 compliance 通過", "🔧 tools", "🤖 agent", "⏹ END"]
+    st.divider()
 
-    st.markdown(" → ".join(path))
+    # ── 單次任務明細 ──
+    st.subheader("🔍 單次任務明細")
+
+    run_options = {
+        f"{to_taipei(r['timestamp']).strftime('%m/%d %H:%M')}  |  {r['input_message'][:25]}...": r["run_id"]
+        for r in runs
+    }
+    selected_label  = st.selectbox("選擇任務：", list(run_options.keys()))
+    selected_run_id = run_options[selected_label]
+    selected_run    = next(r for r in runs if r["run_id"] == selected_run_id)
+
+    llm_calls = get_llm_calls_by_run(selected_run_id)
+
+    if not llm_calls:
+        st.info("此任務無 LLM 呼叫明細")
+    else:
+        lm1, lm2, lm3 = st.columns(3)
+        lm1.metric("LLM 呼叫次數",   len(llm_calls))
+        lm2.metric("Input Tokens",  sum(c["input_tokens"]  for c in llm_calls))
+        lm3.metric("Output Tokens", sum(c["output_tokens"] for c in llm_calls))
+
+        df_calls = pd.DataFrame(llm_calls)
+        df_calls["cost_usd"]    = df_calls["cost_usd"].apply(lambda x: f"${x:.8f}")
+        df_calls["latency_ms"]  = df_calls["latency_ms"].apply(lambda x: f"{x} ms")
+        df_calls["call_reason"] = df_calls["call_reason"].fillna("—")
+
+        display_call_cols = {
+            "sequence":      "第幾次",
+            "call_reason":   "呼叫原因",
+            "input_tokens":  "Input Tokens",
+            "output_tokens": "Output Tokens",
+            "cost_usd":      "費用 (USD)",
+            "latency_ms":    "延遲",
+        }
+        st.dataframe(
+            df_calls[list(display_call_cols.keys())].rename(columns=display_call_cols),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        # 節點執行路徑
+        st.subheader("🗺️ 節點執行路徑")
+        revision_count = selected_run["revision_count"]
+        if revision_count > 0:
+            intercept_steps = []
+            for _ in range(revision_count):
+                intercept_steps += ["❌ compliance 攔截", "🤖 agent 重新推理"]
+            path = (["▶ START", "🤖 agent", "🔍 compliance"]
+                    + intercept_steps
+                    + ["🔍 compliance 通過", "🔧 tools", "🤖 agent", "⏹ END"])
+        else:
+            path = ["▶ START", "🤖 agent", "🔍 compliance 通過", "🔧 tools", "🤖 agent", "⏹ END"]
+
+        st.markdown(" → ".join(path))
