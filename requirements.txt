@@ -3,9 +3,8 @@ langchain-core
 langgraph
 python-dotenv
 fastapi
-uvicorn
-httptools
-websockets
+uvicorn[standard]
+pydantic
 streamlit
 requests
 pandas
