@@ -8,6 +8,4 @@ httptools
 websockets
 streamlit
 requests
-fastapi
-uvicorn[standard]
-pydantic
+pandas

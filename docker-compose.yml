@@ -8,6 +8,8 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    volumes:
+      - db_data:/app/data     # SQLite 資料持久化，重啟不消失
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 10s
@@ -23,6 +25,11 @@ services:
       - "8501:8501"
     environment:
       API_URL: http://api:8000
+    volumes:
+      - db_data:/app/data     # 和 api 共用同一個 volume，監控頁面讀取同一份 DB
     depends_on:
       api:
         condition: service_healthy
+
+volumes:
+  db_data:                    # named volume，由 Docker 管理

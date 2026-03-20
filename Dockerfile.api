@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 分層複製：core 是純業務邏輯，api 是 web 層
 COPY core/ ./core/
 COPY api/ ./api/
+COPY monitoring/ ./monitoring/
 
 EXPOSE 8000
 
