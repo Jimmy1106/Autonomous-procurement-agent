@@ -11,6 +11,20 @@ from pathlib import Path
 
 DB_PATH = Path(os.getenv("DB_PATH", "data/monitoring.db"))
 
+# 需要 migration 的新欄位（欄位名稱 → 預設值）
+_MIGRATION_COLUMNS = {
+    "runs": {
+        "item_price":        "INTEGER DEFAULT 0",
+        "original_quantity": "INTEGER DEFAULT 0",
+        "original_total":    "INTEGER DEFAULT 0",
+        "final_quantity":    "INTEGER DEFAULT 0",
+        "final_total":       "INTEGER DEFAULT 0",
+    },
+    "llm_calls": {
+        "call_reason": "TEXT",
+    },
+}
+
 
 def init_db() -> None:
     """初始化資料庫：建立資料夾、資料表，並執行 schema migration。"""
@@ -20,10 +34,12 @@ def init_db() -> None:
     with _get_conn() as conn:
         conn.executescript(schema_path.read_text())
         # Migration：為舊版資料庫補上新欄位（若已存在則忽略）
-        try:
-            conn.execute("ALTER TABLE llm_calls ADD COLUMN call_reason TEXT")
-        except sqlite3.OperationalError:
-            pass  # 欄位已存在，略過
+        for table, columns in _MIGRATION_COLUMNS.items():
+            for col, col_def in columns.items():
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+                except sqlite3.OperationalError:
+                    pass  # 欄位已存在，略過
 
 
 @contextmanager
@@ -51,11 +67,17 @@ def insert_run(run: dict) -> None:
             """
             INSERT INTO runs
                 (run_id, timestamp, input_message, budget, status,
-                 revision_count, total_input_tokens, total_output_tokens,
+                 revision_count,
+                 item_price, original_quantity, original_total,
+                 final_quantity, final_total,
+                 total_input_tokens, total_output_tokens,
                  total_cost_usd, total_latency_ms)
             VALUES
                 (:run_id, :timestamp, :input_message, :budget, :status,
-                 :revision_count, :total_input_tokens, :total_output_tokens,
+                 :revision_count,
+                 :item_price, :original_quantity, :original_total,
+                 :final_quantity, :final_total,
+                 :total_input_tokens, :total_output_tokens,
                  :total_cost_usd, :total_latency_ms)
             """,
             run,
@@ -113,15 +135,9 @@ def get_llm_calls_by_run(run_id: str) -> list[dict]:
 
 
 def get_summary_stats(start_utc: str | None = None, end_utc: str | None = None) -> dict:
-    """
-    取得統計數字。可傳入時間區間做篩選，不傳則統計全部。
-    新增 avg_llm_calls_per_run（平均每任務 LLM 呼叫次數）。
-    """
-    where = ""
-    params: tuple = ()
-    if start_utc and end_utc:
-        where = "WHERE timestamp >= ? AND timestamp <= ?"
-        params = (start_utc, end_utc)
+    """取得統計數字，可傳入時間區間做篩選，不傳則統計全部。"""
+    where  = "WHERE timestamp >= ? AND timestamp <= ?" if (start_utc and end_utc) else ""
+    params: tuple = (start_utc, end_utc) if (start_utc and end_utc) else ()
 
     with _get_conn() as conn:
         row = conn.execute(
@@ -138,7 +154,6 @@ def get_summary_stats(start_utc: str | None = None, end_utc: str | None = None) 
             params,
         ).fetchone()
 
-        # 平均每任務 LLM 呼叫次數：從 llm_calls join runs 計算
         llm_row = conn.execute(
             f"""
             SELECT ROUND(AVG(call_count), 2) AS avg_llm_calls_per_run
@@ -154,16 +169,15 @@ def get_summary_stats(start_utc: str | None = None, end_utc: str | None = None) 
         ).fetchone()
 
     result = dict(row) if row else {}
-    result["avg_llm_calls_per_run"] = dict(llm_row).get("avg_llm_calls_per_run", 0) if llm_row else 0
+    result["avg_llm_calls_per_run"] = (
+        dict(llm_row).get("avg_llm_calls_per_run", 0) if llm_row else 0
+    )
     return result
 
 
 def get_revision_distribution(start_utc: str | None = None, end_utc: str | None = None) -> list[dict]:
-    where = ""
-    params: tuple = ()
-    if start_utc and end_utc:
-        where = "WHERE timestamp >= ? AND timestamp <= ?"
-        params = (start_utc, end_utc)
+    where  = "WHERE timestamp >= ? AND timestamp <= ?" if (start_utc and end_utc) else ""
+    params: tuple = (start_utc, end_utc) if (start_utc and end_utc) else ()
 
     with _get_conn() as conn:
         rows = conn.execute(
@@ -179,11 +193,8 @@ def get_revision_distribution(start_utc: str | None = None, end_utc: str | None 
 
 
 def get_status_distribution(start_utc: str | None = None, end_utc: str | None = None) -> list[dict]:
-    where = ""
-    params: tuple = ()
-    if start_utc and end_utc:
-        where = "WHERE timestamp >= ? AND timestamp <= ?"
-        params = (start_utc, end_utc)
+    where  = "WHERE timestamp >= ? AND timestamp <= ?" if (start_utc and end_utc) else ""
+    params: tuple = (start_utc, end_utc) if (start_utc and end_utc) else ()
 
     with _get_conn() as conn:
         rows = conn.execute(

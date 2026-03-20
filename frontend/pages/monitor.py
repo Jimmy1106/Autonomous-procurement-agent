@@ -241,12 +241,32 @@ with tab2:
     df_runs["total_cost_usd"]   = df_runs["total_cost_usd"].apply(lambda x: f"${x:.6f}")
     df_runs["total_latency_ms"] = df_runs["total_latency_ms"].apply(lambda x: f"{x} ms")
 
+    # 格式化採購金額欄位（None / NaN / 0 顯示為 —）
+    def fmt_price(val):
+        try:
+            return f"${int(val):,}" if val and str(val) != "nan" else "—"
+        except (ValueError, TypeError):
+            return "—"
+
+    df_runs["item_price"]      = df_runs["item_price"].apply(fmt_price)
+    df_runs["original_total"]  = df_runs.apply(
+        lambda r: f"{int(r['original_quantity'])} 個 × {fmt_price(r['item_price'].replace('$','').replace(',','') if r['item_price'] != '—' else 0)} = {fmt_price(r['original_total'])}"
+        if r["original_total"] and r["original_total"] != 0 else "—", axis=1
+    )
+    df_runs["final_total"]     = df_runs.apply(
+        lambda r: f"{int(r['final_quantity'])} 個 = {fmt_price(r['final_total'])}"
+        if r["final_total"] and r["final_total"] != 0 else "—", axis=1
+    )
+
     display_cols = {
         "timestamp":            "時間（台灣）",
         "input_message":        "輸入需求",
         "budget":               "預算",
         "status":               "結果",
         "revision_count":       "修正次數",
+        "item_price":           "商品單價",
+        "original_total":       "原始方案",
+        "final_total":          "最終方案",
         "total_input_tokens":   "Input Tokens",
         "total_output_tokens":  "Output Tokens",
         "total_cost_usd":       "費用 (USD)",
@@ -270,6 +290,34 @@ with tab2:
     selected_label  = st.selectbox("選擇任務：", list(run_options.keys()))
     selected_run_id = run_options[selected_label]
     selected_run    = next(r for r in runs if r["run_id"] == selected_run_id)
+
+    # 採購金額摘要
+    def fmt_price_val(val):
+        try:
+            return f"${int(val):,}" if val and str(val) != "nan" else "—"
+        except (ValueError, TypeError):
+            return "—"
+
+    pm1, pm2, pm3, pm4, pm5 = st.columns(5)
+    pm1.metric("預算上限",       f"${selected_run['budget']:,}")
+    pm2.metric("商品單價",       fmt_price_val(selected_run.get("item_price")))
+    pm3.metric("原始下單總額",   fmt_price_val(selected_run.get("original_total")))
+    pm4.metric("最終下單總額",   fmt_price_val(selected_run.get("final_total")))
+    pm5.metric("修正次數",       selected_run.get("revision_count", 0))
+
+    # 原始 vs 最終的差異說明
+    orig_qty  = selected_run.get("original_quantity")
+    final_qty = selected_run.get("final_quantity")
+    if orig_qty and final_qty and orig_qty != final_qty:
+        orig_total  = selected_run.get("original_total") or 0
+        final_total = selected_run.get("final_total") or 0
+        st.caption(
+            f"⚠️ 原始方案：{orig_qty} 個（總額 {int(orig_total):,} 元）"
+            f" → 超出預算，自動修正為 {final_qty} 個"
+            f"（總額 {int(final_total):,} 元）"
+        )
+
+    st.divider()
 
     llm_calls = get_llm_calls_by_run(selected_run_id)
 
