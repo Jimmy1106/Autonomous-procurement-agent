@@ -53,11 +53,24 @@ def taipei_to_utc_range(start: datetime, end: datetime) -> tuple[str, str]:
 
 
 def delta_arrow(current, previous) -> str:
+    """回傳文字格式的漲跌幅（供比較表格用）。"""
     if not previous or previous == 0:
         return ""
     pct = (current - previous) / previous * 100
     arrow = "▲" if pct > 0 else "▼"
     return f"{arrow} {abs(pct):.1f}% vs 上週同期"
+
+
+def delta_pct(current, previous) -> str | None:
+    """
+    回傳帶正負號的 % 字串（供 st.metric delta 參數用）。
+    傳字串時 Streamlit 依正負號決定顏色，搭配 delta_color 可正確顯示。
+    """
+    if not previous or previous == 0:
+        return None
+    pct = (current - previous) / previous * 100
+    sign = "+" if pct >= 0 else ""
+    return f"{sign}{pct:.1f}%"
 
 
 # ──────────────────────────────────────────────
@@ -145,18 +158,26 @@ with tab1:
 
     st.subheader("區間總覽")
     c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+    # delta_color:
+    #   "normal"  → 上升綠、下降紅（任務數：越多越好）
+    #   "inverse" → 上升紅、下降綠（費用/延遲/修正次數：越低越好）
     c1.metric("總任務數",       stats.get("total_runs", 0),
-              delta_arrow(stats.get("total_runs", 0), prev_stats.get("total_runs", 0)))
+              delta=delta_pct(stats.get("total_runs", 0), prev_stats.get("total_runs", 0)),
+              delta_color="normal")
     c2.metric("Input Tokens",  f"{stats.get('total_input_tokens', 0):,}")
     c3.metric("Output Tokens", f"{stats.get('total_output_tokens', 0):,}")
     c4.metric("累計費用 (USD)", f"${stats.get('total_cost_usd', 0):.6f}",
-              delta_arrow(stats.get("total_cost_usd", 0), prev_stats.get("total_cost_usd", 0)))
+              delta=delta_pct(stats.get("total_cost_usd", 0), prev_stats.get("total_cost_usd", 0)),
+              delta_color="inverse")
     c5.metric("平均 Latency",  f"{int(stats.get('avg_latency_ms', 0))} ms",
-              delta_arrow(stats.get("avg_latency_ms", 0), prev_stats.get("avg_latency_ms", 0)))
+              delta=delta_pct(stats.get("avg_latency_ms", 0), prev_stats.get("avg_latency_ms", 0)),
+              delta_color="inverse")
     c6.metric("平均修正次數",   f"{stats.get('avg_revision_count', 0):.2f}",
-              delta_arrow(stats.get("avg_revision_count", 0), prev_stats.get("avg_revision_count", 0)))
+              delta=delta_pct(stats.get("avg_revision_count", 0), prev_stats.get("avg_revision_count", 0)),
+              delta_color="inverse")
     c7.metric("平均 LLM 呼叫/任務", f"{stats.get('avg_llm_calls_per_run', 0):.1f}",
-              delta_arrow(stats.get("avg_llm_calls_per_run", 0), prev_stats.get("avg_llm_calls_per_run", 0)))
+              delta=delta_pct(stats.get("avg_llm_calls_per_run", 0), prev_stats.get("avg_llm_calls_per_run", 0)),
+              delta_color="inverse")
 
     st.divider()
 
