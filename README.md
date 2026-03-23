@@ -20,9 +20,38 @@
 
 ## 🖥️ 系統展示
 
+### 💬 主頁
+
 ![系統 Demo](docs/procurement_demo.png)
 
 > 輸入「我要買五個滑鼠」，系統自動完成查價 → 審核攔截 → 修正數量 → 下單的完整流程，每個步驟即時顯示。
+
+### 📊 LLM 監控儀表板
+
+![監控總覽](docs/monitor_overview.png)
+
+> 追蹤每個時間區間的 token 用量、API 費用、執行延遲與 Agent 修正次數，並與上週同期自動比較，以 🔴🟢 標示各指標趨勢。
+
+<details>
+<summary>查看更多監控頁面截圖</summary>
+<br>
+
+**修正次數分布 & 任務結果分布**
+![監控圖表](docs/monitor_charts.png)
+
+> 以長條圖呈現 Agent 自動修正次數的分布，以及各任務結果（成功 / 攔截後修正 / 錯誤）的佔比。
+
+**任務紀錄列表（含採購金額明細）**
+![任務紀錄](docs/monitor_runs.png)
+
+> 列出每筆採購任務的完整紀錄，包含商品單價、原始下單方案與最終成交方案，清楚呈現 compliance 攔截前後的差異。
+
+**單次任務明細 & 節點執行路徑**
+![任務明細](docs/monitor_detail.png)
+
+> 展開單次任務可看到每次 LLM 呼叫的原因、token 用量與延遲，以及該次任務的節點執行路徑視覺化。
+
+</details>
 
 ---
 
@@ -35,6 +64,7 @@
 - **完整 Agentic Loop**：基於 LangGraph 實作，支援多節點、條件路由與狀態管理
 - **Web 服務化**：FastAPI 提供 REST API，Streamlit 提供聊天介面，支援 SSE 串流即時顯示執行過程
 - **容器化部署**：Docker Compose 一行指令啟動完整服務
+- **LLM 監控**：自製 Callback Handler 追蹤 token 用量、API 成本、執行延遲與採購金額明細，支援時間篩選與上週同期比較分析
 
 ---
 
@@ -43,9 +73,11 @@
 整個系統分為三層：
 
 ```
-[Streamlit 聊天介面]  ←── SSE 串流 ──→  [FastAPI Server]  ←──→  [LangGraph Agent]
-         ↑                                      ↑
-         └──────────────── Docker Compose ───────┘
+[Streamlit 聊天介面 + 監控儀表板]  ←── SSE 串流 ──→  [FastAPI Server]  ←──→  [LangGraph Agent]
+              ↑                                              ↑
+              └───────────────── Docker Compose ─────────────┘
+                                        ↓
+                              [SQLite 監控資料庫]
 ```
 
 ### Agent 核心（LangGraph）
@@ -81,25 +113,34 @@ procurement-agent/
 │   ├── routes/
 │   │   └── procure.py             # POST /api/procure、GET /api/health
 │   ├── services/
-│   │   └── agent_runner.py        # Agent 執行邏輯，產出 SSE 事件串流
+│   │   └── agent_runner.py        # Agent 執行邏輯，注入 CostTracker callback
 │   └── main.py                    # FastAPI app 進入點
 │
+├── monitoring/                    # LLM 監控層
+│   ├── schema.sql                 # SQLite 資料表定義（runs、llm_calls）
+│   ├── storage.py                 # 資料庫讀寫邏輯
+│   └── callback.py                # CostTracker：LangChain Callback Handler
+│
 ├── frontend/
-│   └── streamlit_app.py           # Streamlit 聊天介面
+│   ├── streamlit_app.py           # Streamlit 聊天介面
+│   └── pages/
+│       └── monitor.py             # LLM 監控儀表板（Streamlit 多頁面）
 │
 ├── rag/                           # 預留：Agentic RAG
-├── monitoring/                    # 預留：LLM 監控與成本追蹤
+│
+├── scripts/
+│   └── seed_data.py               # 插入模擬資料供監控頁面展示用
 │
 ├── main.py                        # 本機互動式入口（供除錯用）
 ├── Dockerfile.api                 # FastAPI container 定義
 ├── Dockerfile.frontend            # Streamlit container 定義
-├── docker-compose.yml             # 串起兩個服務
+├── docker-compose.yml             # 串起兩個服務，含 db_data volume
 ├── .dockerignore
 ├── .env.example                   # 環境變數範本
 ├── requirements.txt
 └── docs/                          # 文件與截圖
-    ├── procurement_demo.png           # 系統 Demo 截圖
-    └── procurement_architecture_fixed.png  # LangGraph 架構圖
+    ├── procurement_demo.png
+    └── procurement_architecture_fixed.png
 ```
 
 ---
@@ -122,6 +163,7 @@ docker compose up
 | 服務 | 網址 |
 |---|---|
 | Streamlit 聊天介面 | http://localhost:8501 |
+| LLM 監控儀表板 | http://localhost:8501（側邊欄選 monitor） |
 | FastAPI Swagger 文件 | http://localhost:8000/docs |
 
 ```bash
@@ -169,6 +211,17 @@ python main.py
 
 ---
 
+### 插入監控模擬資料（選用）
+
+讓監控頁面的「與上週同期比較」有資料可以呈現：
+
+```bash
+# Docker 環境（推薦）
+docker compose exec api python scripts/seed_data.py
+```
+
+---
+
 ## 🧪 執行範例
 
 **情境：購買 5 個 Pro Mouse，預算 $500，單價 $120**
@@ -200,12 +253,24 @@ python main.py
 | API 框架 | FastAPI |
 | 前端介面 | Streamlit |
 | 串流通訊 | Server-Sent Events（SSE） |
+| 監控儲存 | SQLite |
 | 容器化 | Docker、Docker Compose |
 | 語言 | Python 3.11 |
 
 ---
 
 ## 📋 版本更動紀錄
+
+### v0.3.0 — LLM 監控儀表板
+
+- 自製 LangChain Callback Handler（`CostTracker`），在不修改任何 agent 邏輯的前提下，攔截每次 LLM 呼叫的 token 用量、費用與延遲
+- 以 SQLite 持久化儲存監控數據，透過 Docker named volume 確保跨 container 存取與重啟後不消失
+- Streamlit 多頁面監控儀表板，包含：
+  - 時間篩選器（今日 / 近 7 天 / 近 30 天 / 自訂）
+  - 與上週同期比較分析（漲跌幅、🔴🟢 趨勢標示）
+  - 採購金額明細（原始方案 vs 最終方案，展示被攔截的原始超預算意圖）
+  - LLM 呼叫次數統計與逐次呼叫原因明細
+  - 節點執行路徑視覺化
 
 ### v0.2.0 — Web 服務化與容器化部署
 
@@ -225,7 +290,6 @@ python main.py
 
 ## 🔮 未來規劃
 
-- [ ] LLM 監控頁面（token 用量、成本追蹤、思考過程可視化）
 - [ ] Agentic RAG（檢索採購規範、系統說明文件）
 - [ ] Memory 與向量資料庫（跨 session 記憶使用者偏好）
 - [ ] 擴充商品資料庫（連接真實 API）
