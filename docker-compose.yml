@@ -8,14 +8,17 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      CHROMA_PATH: /app/data/chroma       # ChromaDB 路徑，存在 db_data volume 內
+      DB_PATH: /app/data/monitoring.db    # SQLite 路徑
     volumes:
-      - db_data:/app/data     # SQLite 資料持久化，重啟不消失
+      - db_data:/app/data                 # SQLite + ChromaDB 共用同一個 volume
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 30s                   # RAG ingest 需要多一點冷啟動時間
 
   frontend:
     build:
@@ -25,11 +28,12 @@ services:
       - "8501:8501"
     environment:
       API_URL: http://api:8000
+      DB_PATH: /app/data/monitoring.db
     volumes:
-      - db_data:/app/data     # 和 api 共用同一個 volume，監控頁面讀取同一份 DB
+      - db_data:/app/data
     depends_on:
       api:
         condition: service_healthy
 
 volumes:
-  db_data:                    # named volume，由 Docker 管理
+  db_data:                                # named volume，由 Docker 管理
