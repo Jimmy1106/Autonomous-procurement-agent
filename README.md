@@ -1,6 +1,6 @@
 # 🤖 自主採購代理人 (Autonomous Procurement Agent)
 
-一個基於 LLM 的自主採購代理人，能接收自然語言採購需求，自動解析意圖、查詢商品價格、進行合規審核，並在預算範圍內完成下單，無需人工介入。
+一個基於 LLM 的自主採購代理人，能接收自然語言採購需求，自動解析意圖、查詢商品價格、進行合規審核，並在預算範圍內完成下單，無需人工介入。支援 Agentic RAG，Agent 可自主判斷是否需要檢索採購規範與商品目錄，將檢索結果納入決策依據。
 
 ---
 
@@ -26,6 +26,30 @@
 
 > 輸入「我要買五個滑鼠」，系統自動完成查價 → 審核攔截 → 修正數量 → 下單的完整流程，每個步驟即時顯示。
 
+<details>
+<summary> 更多 Agentic RAG 功能展示（點擊展開）</summary>
+<br>
+
+**查詢採購規範**
+![RAG 規範查詢](docs/rag_policy01.png)
+![RAG 規範查詢](docs/rag_policy02.png)
+
+> 詢問採購流程，Agent 自主判斷需要檢索知識庫，回傳對應的規範說明。
+
+**查詢商品目錄**
+![RAG 商品查詢](docs/rag_catalog01.png)
+![RAG 商品查詢](docs/rag_catalog02.png)
+
+> 詢問可採購的商品選項，Agent 從商品目錄中檢索並列出相關品項與價格。
+
+**查詢系統使用說明**
+![RAG 使用說明](docs/rag_guide01.png)
+![RAG 使用說明](docs/rag_guide02.png)
+
+> 詢問系統操作方式，Agent 從使用說明文件中檢索並回答。
+
+</details>
+
 ### 📊 LLM 監控儀表板
 
 ![監控總覽](docs/monitor_overview.png)
@@ -33,7 +57,7 @@
 > 追蹤每個時間區間的 token 用量、API 費用、執行延遲與 Agent 修正次數，並與上週同期自動比較，以 🔴🟢 標示各指標趨勢。
 
 <details>
-<summary>查看更多監控頁面截圖</summary>
+<summary>更多監控頁面功能展示（點擊展開）</summary>
 <br>
 
 **修正次數分布 & 任務結果分布**
@@ -61,6 +85,8 @@
 - **自主決策**：Agent 能獨立完成「查價 → 審核 → 下單」的完整流程
 - **合規審核機制**：在工具執行前攔截超預算的下單請求，而非事後處理
 - **自動修正**：被攔截後，Agent 能自主重新計算預算內最大可購買數量並重新下單
+- **Agentic RAG**：以 ChromaDB 建立採購知識庫，Agent 自主判斷是否需要檢索採購規範、商品目錄與系統使用說明，無需每次都強制檢索
+- **自動 Ingest**：服務啟動時自動偵測知識庫文件異動（hash 比對），有異動才重新向量化，無需手動執行
 - **完整 Agentic Loop**：基於 LangGraph 實作，支援多節點、條件路由與狀態管理
 - **Web 服務化**：FastAPI 提供 REST API，Streamlit 提供聊天介面，支援 SSE 串流即時顯示執行過程
 - **容器化部署**：Docker Compose 一行指令啟動完整服務
@@ -74,23 +100,43 @@
 
 ```
 [Streamlit 聊天介面 + 監控儀表板]  ←── SSE 串流 ──→  [FastAPI Server]  ←──→  [LangGraph Agent]
-              ↑                                              ↑
-              └───────────────── Docker Compose ─────────────┘
-                                        ↓
-                              [SQLite 監控資料庫]
+              ↑                                              ↑                        ↑
+              └───────────────── Docker Compose ─────────────┘                        │
+                                        ↓                                             ↓
+                              [SQLite 監控資料庫]                           [ChromaDB 向量資料庫]
+                                                                      (採購規範 / 商品目錄 / 使用說明)
 ```
 
 ### Agent 核心（LangGraph）
 
 由三個節點組成，透過條件路由串聯：
 
-- **`agent`**：核心推理節點，驅動 GPT-4o 分析當前狀況並決定下一步行動（查價或下單）
+- **`agent`**：核心推理節點，驅動 GPT-4o 分析當前狀況並決定下一步行動（查價、下單或檢索知識庫）
 - **`compliance`**：審核節點，在工具實際執行「之前」攔截所有下單請求，驗證總金額是否超出預算。若超標，將拒絕訊息回傳給 Agent 觸發重新計算；若合規則放行
-- **`tools`**：工具執行節點，負責實際呼叫 `check_item_price`（查詢單價）與 `place_order`（執行下單）
+- **`tools`**：工具執行節點，負責實際呼叫 `check_item_price`（查詢單價）、`place_order`（執行下單）與 `search_knowledge_base`（檢索知識庫）
 
 ![LangGraph 架構圖](docs/procurement_architecture_fixed.png)
 
 > 虛線代表條件路由，實線代表固定流程。Agent 與 Compliance 之間的雙向虛線體現了「審核未通過 → 退回重算 → 再次審核」的自我修正迴圈。
+> 
+
+### Agentic RAG
+
+RAG 被封裝為 LangChain `@tool`，而非固定流程節點。Agent 在對話過程中自主判斷是否需要查詢知識庫，屬於 Agentic RAG 的核心概念：
+
+```
+使用者提問
+    ↓
+Agent 判斷是否需要檢索知識庫
+    ├── 需要 → search_knowledge_base → ChromaDB 檢索相關段落 → 回傳給 Agent
+    └── 不需要 → 直接使用既有工具（查價 / 下單）
+```
+
+知識庫包含三份文件：
+
+- **採購規範**（`procurement_policy.md`）：金額限制、審批流程、類別規則
+- **商品目錄**（`product_catalog.md`）：品項、單價、規格
+- **系統使用說明**（`user_guide.md`）：操作流程、預算設定
 
 ---
 
@@ -106,7 +152,7 @@ procurement-agent/
 │   │   ├── reasoning.py           # 推理節點：呼叫 LLM 決定下一步
 │   │   └── compliance.py          # 審核節點：攔截超預算下單
 │   ├── tools/
-│   │   └── procurement_tools.py   # LangChain @tool 定義
+│   │   └── procurement_tools.py   # LangChain @tool 定義（含 search_knowledge_base）
 │   └── memory/                    # 預留：Memory / 向量資料庫
 │
 ├── api/                           # FastAPI web 層
@@ -114,7 +160,7 @@ procurement-agent/
 │   │   └── procure.py             # POST /api/procure、GET /api/health
 │   ├── services/
 │   │   └── agent_runner.py        # Agent 執行邏輯，注入 CostTracker callback
-│   └── main.py                    # FastAPI app 進入點
+│   └── main.py                    # FastAPI app 進入點（含啟動時自動 ingest）
 │
 ├── monitoring/                    # LLM 監控層
 │   ├── schema.sql                 # SQLite 資料表定義（runs、llm_calls）
@@ -126,18 +172,24 @@ procurement-agent/
 │   └── pages/
 │       └── monitor.py             # LLM 監控儀表板（Streamlit 多頁面）
 │
-├── rag/                           # 預留：Agentic RAG
+├── rag/                           # Agentic RAG 模組
+│   ├── documents/
+│   │   ├── procurement_policy.md  # 採購規範（金額限制、審批流程、類別規則）
+│   │   ├── product_catalog.md     # 商品目錄（品項、單價、規格）
+│   │   └── user_guide.md          # 系統使用說明（操作流程、預算設定）
+│   ├── ingest.py                  # 文件切段、向量化、存入 ChromaDB（含 hash 異動偵測）
+│   └── retriever.py               # 封裝查詢邏輯，回傳 top-k 相關段落與來源
 │
 ├── scripts/
 │   └── seed_data.py               # 插入模擬資料供監控頁面展示用
 │
 ├── main.py                        # 本機互動式入口（供除錯用）
-├── Dockerfile.api                 # FastAPI container 定義
+├── Dockerfile.api                 # FastAPI container 定義（含 rag/ 複製）
 ├── Dockerfile.frontend            # Streamlit container 定義
 ├── docker-compose.yml             # 串起兩個服務，含 db_data volume
 ├── .dockerignore
 ├── .env.example                   # 環境變數範本
-├── requirements.txt
+├── requirements.txt               # 含 chromadb、langchain-chroma
 └── docs/                          # 文件與截圖
     ├── procurement_demo.png
     └── procurement_architecture_fixed.png
@@ -160,8 +212,11 @@ docker compose up --build
 docker compose up
 ```
 
+> 💡 首次啟動時會自動執行 RAG ingest（文件向量化），之後只有文件異動才會重新執行。
+> 
+
 | 服務 | 網址 |
-|---|---|
+| --- | --- |
 | Streamlit 聊天介面 | http://localhost:8501 |
 | LLM 監控儀表板 | http://localhost:8501（側邊欄選 monitor） |
 | FastAPI Swagger 文件 | http://localhost:8000/docs |
@@ -188,7 +243,16 @@ cp .env.example .env
 # 編輯 .env，填入 OPENAI_API_KEY
 ```
 
-#### 3a. 啟動 Web 服務（需開兩個 Terminal）
+#### 3. 建立知識庫向量索引
+
+```bash
+python rag/ingest.py
+```
+
+> 此步驟只需執行一次，之後若文件有異動再重新執行即可。Docker 模式下會自動處理，無需手動執行。
+> 
+
+#### 4a. 啟動 Web 服務（需開兩個 Terminal）
 
 ```bash
 # Terminal 1：FastAPI
@@ -198,13 +262,14 @@ uvicorn api.main:app --reload --port 8000
 streamlit run frontend/streamlit_app.py
 ```
 
-#### 3b. 本機互動式 Terminal（測試用）
+#### 4b. 本機互動式 Terminal（測試用）
 
 ```bash
 python main.py
 ```
 
 執行後可選擇：
+
 - `1`：產出系統架構流程圖
 - `2`：超標測試（購買 5 個 Mouse，預算 $500，會被攔截並自動修正）
 - `3`：合規測試（購買 4 個 Mouse，應直接通過）
@@ -224,6 +289,8 @@ docker compose exec api python scripts/seed_data.py
 
 ## 🧪 執行範例
 
+### 採購流程（合規審核 + 自動修正）
+
 **情境：購買 5 個 Pro Mouse，預算 $500，單價 $120**
 
 ```
@@ -242,14 +309,44 @@ docker compose exec api python scripts/seed_data.py
 🔄 修正次數：1
 ```
 
+### Agentic RAG（知識庫檢索）
+
+**情境：詢問採購規範**
+
+```
+使用者：單筆採購超過多少錢需要主管審批？
+Agent：（呼叫 search_knowledge_base）
+→ 根據採購規範，單次採購 $500 以下可自行下單；$501–$2,000 需部門主管口頭確認；
+  $2,001 以上需填寫採購申請單，經主管書面簽核後才可下單。
+```
+
+**情境：查詢商品目錄**
+
+```
+使用者：目錄裡有哪些鍵盤可以選？
+Agent：（呼叫 search_knowledge_base）
+→ 商品目錄中有兩款鍵盤：機械鍵盤 $350、薄膜鍵盤 $150。
+```
+
+**情境：系統使用說明**
+
+```
+使用者：不小心下單超出預算怎麼辦？
+Agent：（呼叫 search_knowledge_base）
+→ 系統會自動計算預算內最多可購買的數量，並以修正後的數量重新下單，不需要人工介入。
+  也可以在畫面左側 Sidebar 預先設定預算上限，系統不會下單超過此金額的訂單。
+```
+
 ---
 
 ## 🛠️ 技術棧
 
 | 類別 | 技術 |
-|---|---|
+| --- | --- |
 | LLM | GPT-4o |
+| Embedding | OpenAI text-embedding-3-small |
 | Agent 框架 | LangGraph、LangChain |
+| 向量資料庫 | ChromaDB |
 | API 框架 | FastAPI |
 | 前端介面 | Streamlit |
 | 串流通訊 | Server-Sent Events（SSE） |
@@ -260,6 +357,15 @@ docker compose exec api python scripts/seed_data.py
 ---
 
 ## 📋 版本更動紀錄
+
+### v0.4.0 — Agentic RAG
+
+- 新增 Agentic RAG 模組，以 ChromaDB 建立採購知識庫（採購規範、商品目錄、系統使用說明）
+- RAG 封裝為 LangChain `@tool`（`search_knowledge_base`），Agent 自主判斷是否需要檢索，不改動任何現有節點
+- 文件依 Markdown 標題切段後，以 OpenAI `text-embedding-3-small` 向量化存入 ChromaDB
+- 服務啟動時自動偵測文件異動（hash 比對），有異動才重新 ingest，無需手動執行
+- 更新 system prompt，加入三個工具的使用時機說明
+- 補齊 `check_item_price` 商品對照表（鍵盤 $350、Webcam $800）
 
 ### v0.3.0 — LLM 監控儀表板
 
@@ -290,7 +396,7 @@ docker compose exec api python scripts/seed_data.py
 
 ## 🔮 未來規劃
 
-- [ ] Agentic RAG（檢索採購規範、系統說明文件）
+- [ ] 進階 RAG 功能（Query Rewriting、多步驟檢索、多來源選擇）
 - [ ] Memory 與向量資料庫（跨 session 記憶使用者偏好）
 - [ ] 擴充商品資料庫（連接真實 API）
 - [ ] 多層級審核機制（主管審批流程）
